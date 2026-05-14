@@ -1,0 +1,21 @@
+{
+  "input": {
+    "compute_job_id": "local-positive-control",
+    "queue_item_id": "local-positive-control",
+    "validation_type": "md",
+    "target_name": "synthetic-minimal-protein",
+    "compound_name": "ethanol",
+    "compound_smiles": "CCO",
+    "simulation_steps": 10,
+    "temperature": 300.0,
+    "ph": 7.4,
+    "box_padding": 10.0,
+    "force_field": "protein=amber14; ligand=worker_default_openff_or_gaff",
+    "solvent_model": "tip3p",
+    "protein_source": "synthetic minimal PDB for worker smoke testing",
+    "ligand_source": "positive-control ethanol SMILES",
+    "preparation_method": "TWOG supplies protein-only PDB and SMILES; worker performs 3D ligand prep and PDBQT conversion.",
+    "protein_pdb": "ATOM      1  N   ALA A   1      11.104  13.207   9.347  1.00 20.00           N\nATOM      2  CA  ALA A   1      12.560  13.207   9.347  1.00 20.00           C\nATOM      3  C   ALA A   1      13.030  14.620   9.706  1.00 20.00           C\nATOM      4  O   ALA A   1      12.280  15.560   9.500  1.00 20.00           O\nTER\nEND\n"
+  }
+}
+

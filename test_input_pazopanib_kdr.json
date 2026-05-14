@@ -1,0 +1,21 @@
+{
+  "input": {
+    "compute_job_id": "local-pazopanib-kdr",
+    "queue_item_id": "local-pazopanib-kdr",
+    "validation_type": "md",
+    "target_name": "VEGFR2/KDR synthetic smoke receptor",
+    "compound_name": "pazopanib",
+    "compound_smiles": "CC1=C(C=C(C=C1)NC2=NC=CC(=N2)N(C)C3=CC4=NN(C(=C4C=C3)C)C)S(=O)(=O)N",
+    "simulation_steps": 10,
+    "temperature": 300.0,
+    "ph": 7.4,
+    "box_padding": 10.0,
+    "force_field": "protein=amber14; ligand=worker_default_openff_or_gaff",
+    "solvent_model": "tip3p",
+    "protein_source": "synthetic minimal protein-only PDB for pazopanib ligand-prep smoke testing",
+    "ligand_source": "PubChem canonical SMILES for pazopanib",
+    "preparation_method": "TWOG supplies protein-only PDB and canonical SMILES; worker performs SMILES-to-3D, protonation, and ligand PDBQT preparation from SDF.",
+    "protein_pdb": "ATOM      1  N   GLY A   1      11.104  13.207   9.347  1.00 20.00           N\nATOM      2  CA  GLY A   1      12.560  13.207   9.347  1.00 20.00           C\nATOM      3  C   GLY A   1      13.030  14.620   9.706  1.00 20.00           C\nATOM      4  O   GLY A   1      12.280  15.560   9.500  1.00 20.00           O\nTER\nEND\n"
+  }
+}
+
