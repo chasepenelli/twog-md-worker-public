@@ -54,11 +54,10 @@ docker run --rm twog-md-worker:test python /app/src/handler.py /app/test_input_p
 
 ## Hosted Endpoint
 
-The intended image is:
+The public RunPod image is:
 
 ```text
-ghcr.io/chasepenelli/twog-md-worker:smoke-v1
+ghcr.io/chasepenelli/twog-md-worker-public:smoke-v1
 ```
 
 Create a new RunPod serverless endpoint named `twog-md-smoke-v1`, set `workersMin=0`, and set `workersMax=2` for smoke validation. Update `HSA_RUNPOD_ENDPOINT_ID` in GitHub Actions and Dagster+ only after the endpoint is created.
-
