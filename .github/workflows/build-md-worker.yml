@@ -69,6 +69,11 @@ jobs:
               raise SystemExit(json.dumps(payload, indent=2)[:4000])
           PY
 
+      - name: Verify docking binaries
+        run: |
+          docker run --rm twog-md-worker-public:test \
+            python -c "import shutil; assert shutil.which('vina'); assert shutil.which('mk_prepare_receptor.py')"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:

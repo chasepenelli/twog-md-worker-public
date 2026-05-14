@@ -5,7 +5,7 @@ ARG MAMBA_DOCKERFILE_ACTIVATE=1
 
 COPY --chown=$MAMBA_USER:$MAMBA_USER requirements.txt /tmp/requirements.txt
 
-RUN micromamba install -y -n base -c conda-forge python=3.11 rdkit scipy gemmi && \
+RUN micromamba install -y -n base -c conda-forge python=3.11 rdkit scipy gemmi vina && \
     micromamba clean --all --yes
 
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt

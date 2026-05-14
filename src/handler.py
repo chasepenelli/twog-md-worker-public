@@ -2,9 +2,9 @@
 
 This worker intentionally starts with a conservative scope: validate the input
 contract, sanitize the protein PDB, generate a 3D ligand from SMILES, and prepare
-ligand PDBQT from SDF/MOL data rather than from ligand PDB. Docking and true MD
-are explicit later stages and are reported as skipped unless enabled by worker
-configuration.
+ligand PDBQT from SDF/MOL data rather than from ligand PDB. Docking is an
+optional smoke stage. True MD remains deferred until the preparation and docking
+contract is stable.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,7 +75,24 @@ def run_worker(payload: dict[str, Any]) -> dict[str, Any]:
             result["stages"].append(_stage("ligand_pdbqt", "completed", **ligand_pdbqt["stage_details"]))
             result["artifacts"]["ligand_pdbqt"] = _artifact_summary(ligand_pdbqt["pdbqt_path"])
 
-            result["stages"].append(_docking_stage(input_payload))
+            docking_result = _docking_stage(input_payload, protein_path, ligand_pdbqt["pdbqt_path"], workdir)
+            result["stages"].append(docking_result["stage"])
+            for artifact_key, artifact_path in docking_result.get("artifacts", {}).items():
+                result["artifacts"][artifact_key] = _artifact_summary(artifact_path)
+            if docking_result["stage"].get("status") == "failed":
+                result["status"] = "failed"
+                result["errors"].append(
+                    {
+                        "stage": "docking",
+                        "message": docking_result["stage"].get("message") or "Docking stage failed.",
+                        **{
+                            key: value
+                            for key, value in docking_result["stage"].items()
+                            if key not in {"stage", "status", "message"}
+                        },
+                    }
+                )
+                return result
             result["stages"].append(_md_smoke_stage(input_payload))
     except StageFailure as exc:
         result["status"] = "failed"
@@ -113,6 +131,7 @@ def _base_result(payload: dict[str, Any]) -> dict[str, Any]:
             "ph": payload.get("ph"),
             "force_field": payload.get("force_field"),
             "solvent_model": payload.get("solvent_model"),
+            "enable_docking": payload.get("enable_docking"),
         },
         "stages": [],
         "artifacts": {},
@@ -245,17 +264,172 @@ def _prepare_ligand_pdbqt(sdf_path: Path, workdir: Path) -> dict[str, Any]:
     }
 
 
-def _docking_stage(payload: dict[str, Any]) -> dict[str, Any]:
+def _docking_stage(payload: dict[str, Any], protein_path: Path, ligand_pdbqt_path: Path, workdir: Path) -> dict[str, Any]:
     if not _truthy(payload.get("enable_docking")):
-        return _stage(
-            "docking",
-            "skipped",
-            reason="Docking is disabled in smoke-v1 unless enable_docking=true is supplied.",
-        )
+        return {
+            "stage": _stage(
+                "docking",
+                "skipped",
+                reason="Docking is disabled in smoke-v1 unless enable_docking=true is supplied.",
+            ),
+            "artifacts": {},
+        }
     vina = _find_command("vina")
     if vina is None:
-        return _stage("docking", "failed", message="vina executable is not available in the worker image.")
-    return _stage("docking", "skipped", reason="Docking command wiring is intentionally deferred until prep smoke passes.")
+        return {
+            "stage": _stage("docking", "failed", message="vina executable is not available in the worker image."),
+            "artifacts": {},
+        }
+    try:
+        receptor = _prepare_receptor_pdbqt(protein_path, workdir)
+        box = _docking_box(protein_path, payload)
+        docked_pdbqt = workdir / "docked_ligand.pdbqt"
+        command = [
+            vina,
+            "--receptor",
+            str(receptor["pdbqt_path"]),
+            "--ligand",
+            str(ligand_pdbqt_path),
+            "--center_x",
+            f"{box['center_x']:.3f}",
+            "--center_y",
+            f"{box['center_y']:.3f}",
+            "--center_z",
+            f"{box['center_z']:.3f}",
+            "--size_x",
+            f"{box['size_x']:.3f}",
+            "--size_y",
+            f"{box['size_y']:.3f}",
+            "--size_z",
+            f"{box['size_z']:.3f}",
+            "--exhaustiveness",
+            str(_int_payload_or_default(payload, "docking_exhaustiveness", 4)),
+            "--num_modes",
+            str(_int_payload_or_default(payload, "docking_num_modes", 3)),
+            "--cpu",
+            str(_int_payload_or_default(payload, "docking_cpu", 1)),
+            "--out",
+            str(docked_pdbqt),
+        ]
+        completed = _run_subprocess(command, stage="docking")
+        if not docked_pdbqt.exists() or docked_pdbqt.stat().st_size == 0:
+            raise StageFailure(
+                "docking",
+                "Vina completed without producing a non-empty docked ligand artifact.",
+                completed,
+            )
+    except StageFailure as exc:
+        return {
+            "stage": _stage("docking", "failed", message=exc.message, **exc.details),
+            "artifacts": {},
+        }
+    affinity = _parse_vina_best_affinity(completed.get("stdout_tail", ""))
+    return {
+        "stage": _stage(
+            "docking",
+            "completed",
+            command=completed["command"],
+            return_code=completed["return_code"],
+            stdout_tail=completed["stdout_tail"],
+            stderr_tail=completed["stderr_tail"],
+            receptor_artifact="receptor.pdbqt",
+            docked_ligand_artifact="docked_ligand.pdbqt",
+            best_affinity_kcal_mol=affinity,
+            **box,
+        ),
+        "artifacts": {
+            "receptor_pdbqt": receptor["pdbqt_path"],
+            "docked_ligand_pdbqt": docked_pdbqt,
+        },
+    }
+
+
+def _prepare_receptor_pdbqt(protein_path: Path, workdir: Path) -> dict[str, Any]:
+    command = _find_command("mk_prepare_receptor.py")
+    if command is None:
+        raise StageFailure("docking", "mk_prepare_receptor.py is not available in the worker image.")
+    receptor_path = workdir / "receptor.pdbqt"
+    completed = _run_subprocess(
+        [command, "--read_pdb", str(protein_path), "--write_pdbqt", str(receptor_path)],
+        stage="docking",
+    )
+    if not receptor_path.exists() or receptor_path.stat().st_size == 0:
+        raise StageFailure(
+            "docking",
+            "Receptor PDBQT preparation completed without producing a non-empty artifact.",
+            completed,
+        )
+    return {"pdbqt_path": receptor_path, "stage_details": completed}
+
+
+def _docking_box(protein_path: Path, payload: dict[str, Any]) -> dict[str, float]:
+    coordinates = _protein_coordinates(protein_path)
+    if not coordinates:
+        raise StageFailure("docking", "Could not infer docking box because no protein atom coordinates were parsed.")
+    xs, ys, zs = zip(*coordinates)
+    center = payload.get("docking_center")
+    if isinstance(center, dict):
+        center_x = _float_payload_or_default(center, "x", (min(xs) + max(xs)) / 2)
+        center_y = _float_payload_or_default(center, "y", (min(ys) + max(ys)) / 2)
+        center_z = _float_payload_or_default(center, "z", (min(zs) + max(zs)) / 2)
+    else:
+        center_x = (min(xs) + max(xs)) / 2
+        center_y = (min(ys) + max(ys)) / 2
+        center_z = (min(zs) + max(zs)) / 2
+    size = payload.get("docking_box_size")
+    if isinstance(size, dict):
+        size_x = _float_payload_or_default(size, "x", 24.0)
+        size_y = _float_payload_or_default(size, "y", 24.0)
+        size_z = _float_payload_or_default(size, "z", 24.0)
+    else:
+        scalar = _float_value_or_default(size, 24.0)
+        size_x = size_y = size_z = scalar
+    return {
+        "center_x": float(center_x),
+        "center_y": float(center_y),
+        "center_z": float(center_z),
+        "size_x": float(size_x),
+        "size_y": float(size_y),
+        "size_z": float(size_z),
+    }
+
+
+def _protein_coordinates(protein_path: Path) -> list[tuple[float, float, float]]:
+    coordinates: list[tuple[float, float, float]] = []
+    for line in protein_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("ATOM"):
+            continue
+        try:
+            coordinates.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+        except ValueError:
+            continue
+    return coordinates
+
+
+def _float_payload_or_default(payload: dict[str, Any], key: str, default: float) -> float:
+    return _float_value_or_default(payload.get(key, default), default)
+
+
+def _float_value_or_default(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _int_payload_or_default(payload: dict[str, Any], key: str, default: int) -> int:
+    try:
+        return int(payload.get(key, default))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _parse_vina_best_affinity(stdout: str) -> float | None:
+    for line in stdout.splitlines():
+        match = re.match(r"^\s*1\s+(-?\d+(?:\.\d+)?)\s+", line)
+        if match:
+            return float(match.group(1))
+    return None
 
 
 def _md_smoke_stage(payload: dict[str, Any]) -> dict[str, Any]:
@@ -323,4 +497,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
